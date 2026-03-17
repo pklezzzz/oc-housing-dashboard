@@ -12,6 +12,32 @@ import folium
 from streamlit_folium import st_folium
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
+
+# Force dark text on all charts globally
+pio.templates["dark_text"] = go.layout.Template(
+    layout=go.Layout(
+        font=dict(color='#1A2B3C', family='sans-serif', size=13),
+        title=dict(font=dict(color='#1A2B3C', size=15)),
+        xaxis=dict(
+            color='#1A2B3C',
+            tickfont=dict(color='#1A2B3C'),
+            title=dict(font=dict(color='#1A2B3C')),
+        ),
+        yaxis=dict(
+            color='#1A2B3C',
+            tickfont=dict(color='#1A2B3C'),
+            title=dict(font=dict(color='#1A2B3C')),
+        ),
+        legend=dict(font=dict(color='#1A2B3C')),
+        coloraxis=dict(colorbar=dict(
+            tickfont=dict(color='#1A2B3C'),
+            title=dict(font=dict(color='#1A2B3C')),
+        )),
+        annotationdefaults=dict(font=dict(color='#1A2B3C')),
+    )
+)
+pio.templates.default = "plotly_white+dark_text"
 
 st.set_page_config(
     page_title="OC Housing Justice Dashboard",
@@ -31,13 +57,28 @@ st.markdown("""
     .metric-value { font-size: 2.2rem; font-weight: 700; color: #1A5276; }
     .metric-label { font-size: 0.9rem; color: #666; margin-top: 4px; }
     .insight-box {
-        background: #EAF4FB; border-left: 5px solid #1A5276;
+        background: #EAF4FB !important;
+        border-left: 5px solid #2E86C1;
         border-radius: 8px; padding: 16px; margin: 12px 0;
+        color: #1A2B3C !important;
     }
+    .insight-box * { color: #1A2B3C !important; }
     .alert-box {
-        background: #FEF0E6; border-left: 5px solid #D95A00;
+        background: #FEF0E6 !important;
+        border-left: 5px solid #D95A00;
         border-radius: 8px; padding: 16px; margin: 10px 0;
+        color: #1A2B3C !important;
     }
+    .alert-box * { color: #1A2B3C !important; }
+    .alert-box h4 { color: #D95A00 !important; }
+    .metric-card {
+        background: white !important;
+        border-radius: 10px; padding: 20px;
+        box-shadow: 0 2px 10px rgba(26,82,118,0.10);
+        border-left: 5px solid #1A5276; margin-bottom: 16px;
+    }
+    .metric-value { font-size: 2.2rem; font-weight: 700; color: #1A5276 !important; }
+    .metric-label { font-size: 0.9rem; color: #5D8AA8 !important; margin-top: 4px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -106,9 +147,66 @@ def load_data(filepath):
 
     return df, enriched_clean, tract_agg, city_summary
 
+
+@st.cache_data
+def load_tract_geojson():
+    """Load OC census tract boundaries — auto-fetches from Census if file not found."""
+    import os, json, urllib.request
+
+    geojson_path = os.path.join(os.path.dirname(__file__), "oc_tracts.geojson")
+
+    # Use local cache if available
+    if os.path.exists(geojson_path):
+        with open(geojson_path, 'r') as f:
+            return json.load(f)
+
+    # Multiple sources for OC tract GeoJSON — tries each in order
+    urls = [
+        # Census ArcGIS REST — OC tracts direct query (most reliable)
+        (
+            "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/"
+            "USA_Census_Tract_Areas_analysis_trim/FeatureServer/0/query"
+            "?where=STATE_FIPS%3D'06'+AND+CNTY_FIPS%3D'059'"
+            "&outFields=TRACT%2CGEOID%2CNAME%2CNAMELSAD"
+            "&returnGeometry=true&f=geojson&resultRecordCount=600"
+        ),
+        # Census cartographic boundary (full CA, filtered to OC after download)
+        "https://www2.census.gov/geo/tiger/GENZ2020/json/gz_2020_06_140_00_500k.json",
+        # TIGERweb Census 2020 tracts
+        (
+            "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/"
+            "tigerWMS_Census2020/MapServer/8/query"
+            "?where=STATE%3D06+AND+COUNTY%3D059"
+            "&outFields=TRACT%2CGEOID%2CNAME%2CNAMELSAD"
+            "&returnGeometry=true&f=geojson&resultRecordCount=600"
+        ),
+    ]
+    for url in urls:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = json.loads(r.read())
+            if data.get("features"):
+                # Filter to Orange County only if this is the full CA file
+                oc_features = [
+                    f for f in data["features"]
+                    if str(f.get("properties", {}).get("COUNTY", "")).zfill(3) == "059"
+                    or str(f.get("properties", {}).get("GEOID", "")).startswith("06059")
+                    or str(f.get("properties", {}).get("COUNTYFP", "")).zfill(3) == "059"
+                ]
+                if oc_features:
+                    data["features"] = oc_features
+                with open(geojson_path, 'w') as f:
+                    json.dump(data, f)
+                return data
+        except Exception:
+            continue
+    return None
+
 import os
-DATA_PATH = os.path.join(os.path.dirname(__file__), "HousingCentersOC.xlsx")
+DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "HousingCentersOC.xlsx")
 df, enriched, tract_agg, city_summary = load_data(DATA_PATH)
+tract_geojson = load_tract_geojson()
 
 # ── HELPERS ────────────────────────────────────────────────────────────────────
 def get_need_color(score):
@@ -437,7 +535,9 @@ if page == "📊 Overview":
         fig.add_vline(x=tract_agg['Need_Score'].median(), line_dash="dash",
                      line_color="red",
                      annotation_text=f"Median: {tract_agg['Need_Score'].median():.3f}")
-        fig.update_layout(plot_bgcolor='white', paper_bgcolor='white')
+        fig.update_layout(plot_bgcolor='white', paper_bgcolor='white', font=dict(color='#1A2B3C', size=13),
+                         xaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C', size=12)),
+                         yaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C', size=12)))
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
@@ -454,7 +554,9 @@ if page == "📊 Overview":
         fig.add_vline(x=tract_agg['Need_Score'].median(), line_dash="dash",
                      line_color="gray", opacity=0.5,
                      annotation_text="Median need")
-        fig.update_layout(plot_bgcolor='white', paper_bgcolor='white')
+        fig.update_layout(plot_bgcolor='white', paper_bgcolor='white', font=dict(color='#1A2B3C', size=13),
+                         xaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C')),
+                         yaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C')))
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("""<div class="insight-box">
@@ -467,7 +569,9 @@ if page == "📊 Overview":
     project_counts.columns = ['Project Type', 'Count']
     fig = px.bar(project_counts, x='Project Type', y='Count',
                 color='Count', color_continuous_scale='Blues')
-    fig.update_layout(plot_bgcolor='white', paper_bgcolor='white', showlegend=False)
+    fig.update_layout(plot_bgcolor='white', paper_bgcolor='white', showlegend=False, font=dict(color='#1A2B3C', size=13),
+                         xaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C')),
+                         yaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C')))
     st.plotly_chart(fig, use_container_width=True)
 
 # ── MAP ────────────────────────────────────────────────────────────────────────
@@ -514,15 +618,42 @@ elif page == "🗺️ Interactive Map":
         filtered = filtered[filtered['Underserved']]
 
     # ── Helper: percentile → color for overlay layers ──────────────────────────
-    def percentile_to_hex(val, low_color=(30,132,73), high_color=(192,57,43)):
-        """Interpolate green→red based on 0–1 percentile value."""
+    def percentile_to_hex(val, low_color=None, high_color=None):
+        """Map 0-1 percentile to color. Default uses CalEnviroScreen OEHHA palette."""
         if val is None or (hasattr(val,'__float__') and val != val):
             return '#AAAAAA'
         t = float(val)
-        r = int(low_color[0] + (high_color[0] - low_color[0]) * t)
-        g = int(low_color[1] + (high_color[1] - low_color[1]) * t)
-        b = int(low_color[2] + (high_color[2] - low_color[2]) * t)
-        return f'#{r:02X}{g:02X}{b:02X}'
+        if low_color is not None and high_color is not None:
+            # Simple linear interpolation for non-enviro overlays
+            r = int(low_color[0] + (high_color[0] - low_color[0]) * t)
+            g = int(low_color[1] + (high_color[1] - low_color[1]) * t)
+            b = int(low_color[2] + (high_color[2] - low_color[2]) * t)
+            return f'#{r:02X}{g:02X}{b:02X}'
+        # CalEnviroScreen official OEHHA color scale (matches the website)
+        # Dark green → yellow-green → yellow → orange → red → dark red
+        stops = [
+            (0.00, (0,  80,  0)),    # 0-10:  dark green
+            (0.10, (32, 128, 0)),    # 10-20: green
+            (0.20, (64, 160, 0)),    # 20-30: medium green
+            (0.30, (128,192, 0)),    # 30-40: yellow-green
+            (0.40, (208,208, 0)),    # 40-50: yellow-green
+            (0.50, (240,208, 0)),    # 50-60: yellow
+            (0.60, (240,160, 0)),    # 60-70: yellow-orange
+            (0.70, (240,112, 0)),    # 70-80: orange
+            (0.80, (224, 64, 0)),    # 80-90: red-orange
+            (0.90, (192,  0, 0)),    # 90-100: dark red
+            (1.00, (160,  0, 0)),
+        ]
+        for i in range(len(stops)-1):
+            t0, c0 = stops[i]
+            t1, c1 = stops[i+1]
+            if t0 <= t <= t1:
+                frac = (t - t0) / (t1 - t0) if t1 > t0 else 0
+                r = int(c0[0] + (c1[0]-c0[0]) * frac)
+                g = int(c0[1] + (c1[1]-c0[1]) * frac)
+                b = int(c0[2] + (c1[2]-c0[2]) * frac)
+                return f'#{r:02X}{g:02X}{b:02X}'
+        return '#AAAAAA'
 
     # ── Build map ──────────────────────────────────────────────────────────────
     m = folium.Map(location=[33.74, -117.87], zoom_start=10, tiles='CartoDB positron')
@@ -576,16 +707,7 @@ elif page == "🗺️ Interactive Map":
             weight=2, popup=popup, tooltip=tooltip
         ).add_to(lg_need)
 
-        # ── CalEnviroScreen overlay ────────────────────────────────────────────
-        if layer_enviro and enviro_val and enviro_val == enviro_val:
-            ec_color = percentile_to_hex(enviro_val)
-            folium.CircleMarker(
-                location=[lat + 0.003, lon + 0.003],
-                radius=max(6, radius * 0.7),
-                color=ec_color, fill=True, fill_color=ec_color, fill_opacity=0.55,
-                weight=1, dash_array='4',
-                tooltip=f"EnviroScreen %ile: {enviro_val:.0%}"
-            ).add_to(lg_enviro)
+        # CalEnviroScreen overlay handled as polygon layer below
 
         # ── Rent burden overlay ────────────────────────────────────────────────
         if layer_rent:
@@ -663,6 +785,62 @@ elif page == "🗺️ Interactive Map":
                         max_width=200)
                 ).add_to(lg_programs)
 
+    # ── CalEnviroScreen polygon choropleth (matches OEHHA website) ───────────
+    if layer_enviro and tract_geojson is not None:
+        # Build lookup: tract GEOID -> enviro percentile
+        enviro_lookup = {}
+        for _, row in tract_agg.iterrows():
+            tract = clean_tract(row['Census Tract'])
+            enviro_val = row.get('Enviro_Percentile', None)
+            if enviro_val and enviro_val == enviro_val:
+                # GEOID format in Census GeoJSON is state+county+tract = 06059+XXXXXX
+                geoid = f"06059{tract}"
+                enviro_lookup[geoid] = float(enviro_val)
+
+        def enviro_style(feature):
+            geoid = feature['properties'].get('GEOID', '')
+            val = enviro_lookup.get(geoid, None)
+            if val is None:
+                return {
+                    'fillColor': '#CCCCCC',
+                    'color': '#999999',
+                    'weight': 0.5,
+                    'fillOpacity': 0.15,
+                }
+            color = percentile_to_hex(val)
+            return {
+                'fillColor': color,
+                'color': '#555555',
+                'weight': 0.8,
+                'fillOpacity': 0.55,
+            }
+
+        def enviro_highlight(feature):
+            return {
+                'weight': 2,
+                'color': '#1A5276',
+                'fillOpacity': 0.75,
+            }
+
+        # Detect field names (TIGERweb vs static GeoJSON differ)
+        sample_props = tract_geojson['features'][0]['properties'] if tract_geojson['features'] else {}
+        name_field = 'NAMELSAD' if 'NAMELSAD' in sample_props else 'NAME'
+        geoid_field = 'GEOID' if 'GEOID' in sample_props else 'TRACTCE'
+
+        folium.GeoJson(
+            tract_geojson,
+            name='CalEnviroScreen Polygons',
+            style_function=enviro_style,
+            highlight_function=enviro_highlight,
+            tooltip=folium.GeoJsonTooltip(
+                fields=[name_field, geoid_field],
+                aliases=['Tract', 'GEOID'],
+                localize=True,
+            ),
+        ).add_to(lg_enviro)
+    elif layer_enviro and tract_geojson is None:
+        st.warning("⚠️ GeoJSON file not found. Download `oc_tracts.geojson` — see instructions below the map.")
+
     # Add all layers to map
     lg_need.add_to(m)
     lg_enviro.add_to(m)
@@ -676,6 +854,8 @@ elif page == "🗺️ Interactive Map":
 
     # ── Layer legend ───────────────────────────────────────────────────────────
     st.markdown(f"**{mapped} of {len(filtered)} tracts mapped**")
+    if tract_geojson is None:
+        st.warning("⚠️ Could not load census tract boundaries. Check your internet connection and restart the dashboard — boundaries are fetched automatically from the Census Bureau.")
     if layer_enviro or layer_rent or layer_poverty:
         st.markdown("**Active overlay layers** (smaller dashed circles):")
         if layer_enviro:
@@ -717,7 +897,9 @@ elif page == "🚨 Underserved Tracts":
     st.markdown("---")
     fig = px.bar(underserved, x='Census Tract', y=['Need_Score', 'Total_Beds'],
                 barmode='group', color_discrete_sequence=['#D95A00', '#1A5276'])
-    fig.update_layout(plot_bgcolor='white', paper_bgcolor='white')
+    fig.update_layout(plot_bgcolor='white', paper_bgcolor='white', font=dict(color='#1A2B3C', size=13),
+                         xaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C')),
+                         yaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C')))
     st.plotly_chart(fig, use_container_width=True)
 
 # ── CITY ANALYSIS ──────────────────────────────────────────────────────────────
@@ -737,8 +919,11 @@ elif page == "🏙️ City Analysis":
         fig = go.Figure(go.Bar(x=city_sorted['Avg_Need_Score'], y=city_sorted['City'],
                                orientation='h', marker_color=colors))
         fig.update_layout(plot_bgcolor='white', paper_bgcolor='white',
-                         xaxis_title="Avg Need Score",
-                         height=max(300, len(city_sorted) * 28))
+                         xaxis_title='Avg Need Score',
+                         height=max(300, len(city_sorted) * 28),
+                         font=dict(color='#1A2B3C', size=13),
+                         xaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C')),
+                         yaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C')))
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
@@ -747,8 +932,11 @@ elif page == "🏙️ City Analysis":
         fig = go.Figure(go.Bar(x=city_beds['Total_Beds'], y=city_beds['City'],
                                orientation='h', marker_color='#1A5276'))
         fig.update_layout(plot_bgcolor='white', paper_bgcolor='white',
-                         xaxis_title="Total Beds",
-                         height=max(300, len(city_beds) * 28))
+                         xaxis_title='Total Beds',
+                         height=max(300, len(city_beds) * 28),
+                         font=dict(color='#1A2B3C', size=13),
+                         xaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C')),
+                         yaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C')))
         st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Need vs. Beds — City Scatter")
@@ -756,7 +944,9 @@ elif page == "🏙️ City Analysis":
                     text='City', size='Num_Programs', color='Avg_Need_Score',
                     color_continuous_scale=['#2E86C1', '#F0A500', '#E8870A', '#D95A00'])
     fig.update_traces(textposition='top center')
-    fig.update_layout(plot_bgcolor='white', paper_bgcolor='white', height=500)
+    fig.update_layout(plot_bgcolor='white', paper_bgcolor='white', height=500, font=dict(color='#1A2B3C', size=13),
+                         xaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C')),
+                         yaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C')))
     st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Full City Table")
@@ -780,7 +970,26 @@ elif page == "📈 Correlations":
         fig = px.imshow(corr_matrix, x=corr_labels, y=corr_labels,
                        color_continuous_scale='RdBu_r', zmin=-1, zmax=1,
                        text_auto=True)
-        fig.update_layout(height=420)
+        fig.update_layout(
+            height=420,
+            paper_bgcolor='white',
+            plot_bgcolor='white',
+            font=dict(color='#1A2B3C', size=13),
+            xaxis=dict(
+                color='#1A2B3C',
+                tickfont=dict(color='#1A2B3C', size=13),
+                side='bottom',
+            ),
+            yaxis=dict(
+                color='#1A2B3C',
+                tickfont=dict(color='#1A2B3C', size=13),
+            ),
+            coloraxis=dict(colorbar=dict(
+                tickfont=dict(color='#1A2B3C'),
+                title=dict(font=dict(color='#1A2B3C')),
+            )),
+        )
+        fig.update_traces(textfont=dict(color='#1A2B3C', size=13))
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
@@ -788,7 +997,9 @@ elif page == "📈 Correlations":
         fig = px.scatter(enriched, x='Rent Burden %', y='Poverty Line Percentile',
                         color='Need Score', color_continuous_scale=['#2E86C1','#AED6F1','#FDDBB8','#D95A00'],
                         hover_data=['City', 'Census Tract'], trendline='ols')
-        fig.update_layout(plot_bgcolor='white', paper_bgcolor='white', height=420)
+        fig.update_layout(plot_bgcolor='white', paper_bgcolor='white', height=420, font=dict(color='#1A2B3C', size=13),
+                         xaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C')),
+                         yaxis=dict(color='#1A2B3C', tickfont=dict(color='#1A2B3C')))
         st.plotly_chart(fig, use_container_width=True)
 
     col1, col2 = st.columns(2)

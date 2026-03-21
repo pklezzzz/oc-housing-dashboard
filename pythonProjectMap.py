@@ -159,15 +159,17 @@ def load_tract_geojson():
 
 
 def load_ces50():
-    import json
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ces50_oc.json")
-    print(f"DEBUG ces50 path: {path}")
-    print(f"DEBUG exists: {os.path.exists(path)}")
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            data = json.load(f)
-        print(f"DEBUG loaded {len(data)} entries")
-        return data
+    """Load CalEnviroScreen 5.0 percentiles for all OC tracts."""
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "ces50_oc.json"),
+        os.path.join(os.getcwd(), "ces50_oc.json"),
+        os.path.expanduser("~/Desktop/ces50_oc.json"),
+        "ces50_oc.json",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                return json.load(f)
     return {}
 
 
@@ -755,7 +757,7 @@ elif page == "🗺️ Interactive Map":
                 'fillColor': enviro_color(val),
                 'color': '#555555',
                 'weight': 0.8,
-                'fillOpacity': 0.60,
+                'fillOpacity': 0.40,
             }
 
         def es_highlight(feature):
@@ -782,13 +784,16 @@ elif page == "🗺️ Interactive Map":
             ),
         ).add_to(lg_enviro)
 
-    if ces50:
+        if ces50:
             st.caption(f"🌿 CalEnviroScreen 5.0 — {len(ces50)} OC tracts colored by cumulative burden percentile")
+        else:
+            st.warning(f"⚠️ ces50_oc.json not found. Script: `{os.path.abspath(__file__)}` | cwd: `{os.getcwd()}`")
 
     elif layer_enviro and tract_geojson is None:
         st.warning("⚠️ Place `oc_tracts.geojson` in the same folder as this script to enable polygon boundaries.")
 
-    for lg in [lg_need, lg_enviro, lg_rent, lg_poverty, lg_programs, lg_underserved]:
+    # Layer order matters — add enviro polygons FIRST so circles render on top
+    for lg in [lg_enviro, lg_rent, lg_poverty, lg_need, lg_programs, lg_underserved]:
         lg.add_to(m)
     folium.LayerControl(collapsed=False).add_to(m)
 
